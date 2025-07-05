@@ -1,0 +1,86 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- Helper Functions (কোডকে সহজ করার জন্য) ---
+    function isAdmin() {
+      // অ্যাডমিন কিনা তা যাচাই করার জন্য।
+      // এই ফাংশনটি কাজ করার জন্য আপনার users ডকুমেন্টে 'role': 'admin' ফিল্ড থাকতে হবে।
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+    
+    function isSignedIn() {
+      // ব্যবহারকারী লগইন করা আছে কিনা তা যাচাই করে।
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      // ব্যবহারকারী নিজের তথ্যের মালিক কিনা তা যাচাই করে।
+      return request.auth.uid == userId;
+    }
+
+    // === Users Collection ===
+    // ব্যবহারকারীরা নিজের প্রোফাইল পড়তে ও পরিবর্তন করতে পারবে।
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isOwner(userId) || isAdmin();
+    }
+
+    // === Relapse History Sub-collection (স্ট্রোক রিসেটের কারণ সংরক্ষণের জন্য) ===
+    // ব্যবহারকারী শুধুমাত্র নিজের জন্য রিল্যাপস হিস্ট্রি তৈরি করতে এবং পড়তে পারবে।
+    match /users/{userId}/relapseHistory/{historyId} {
+      allow create: if isSignedIn() && isOwner(userId);
+      allow read: if isSignedIn() && isOwner(userId);
+      // কেউ তার ভুলের ইতিহাস মুছতে পারবে না।
+      allow update, delete: if false;
+    }
+
+    // === Diary Entries Collection ===
+    // ডায়েরি সম্পূর্ণরূপে ব্যক্তিগত থাকবে।
+    match /diaryEntries/{docId} {
+      allow read, write, create, delete: if isSignedIn() && isOwner(resource.data.userId);
+    }
+
+    // === Community Posts & Comments ===
+    match /communityPosts/{postId} {
+      allow read, create: if isSignedIn();
+      allow update, delete: if isSignedIn() && (isOwner(resource.data.authorId) || isAdmin());
+
+      // Comments Sub-collection
+      match /comments/{commentId} {
+        allow read, create: if isSignedIn();
+        allow delete: if isSignedIn() && (isOwner(resource.data.authorId) || isAdmin());
+      }
+    }
+    
+    // === Chats & Messages ===
+    match /chats/{chatId} {
+      allow read, write: if isSignedIn() && request.auth.uid in resource.data.participants;
+      allow create: if isSignedIn() && request.auth.uid in request.resource.data.participants;
+      
+      match /messages/{messageId} {
+        allow read, create: if isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+      }
+    }
+    
+    // === Redemption Requests (পুরস্কারের অনুরোধ) ===
+    match /redemptionRequests/{reqId} {
+        allow create: if isSignedIn() && isOwner(request.resource.data.userId);
+        allow read, update, delete: if isAdmin();
+    }
+
+    // === Active Challenges (সাপ্তাহিক চ্যালেঞ্জের জন্য) ===
+    match /activeChallenges/{challengeId} {
+      // একটি নতুন চ্যালেঞ্জ তৈরি করার অনুমতি থাকবে যদি ব্যবহারকারী নিজের জন্যই চ্যালেঞ্জটি তৈরি করে।
+      allow create: if isSignedIn() && isOwner(request.resource.data.userId);
+      // একটি চ্যালেঞ্জ পড়ার, আপডেট করার বা ডিলিট করার অনুমতি থাকবে যদি ব্যবহারকারী ওই চ্যালেঞ্জের মালিক হয়।
+      allow read, update, delete: if isSignedIn() && isOwner(resource.data.userId);
+    }
+
+    // === Custom Tracks (কাস্টম মিউজিক ট্র্যাক) ===
+    match /customTracks/{trackId} {
+      allow read, write, create, delete: if isSignedIn() && isOwner(resource.data.userId);
+    }
+  }
+}
